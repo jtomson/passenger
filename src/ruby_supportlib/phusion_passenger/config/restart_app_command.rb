@@ -25,7 +25,7 @@
 require 'optparse'
 require 'net/http'
 require 'socket'
-require 'rexml/document'
+require 'json'
 PhusionPassenger.require_passenger_lib 'constants'
 PhusionPassenger.require_passenger_lib 'admin_tools/instance_registry'
 PhusionPassenger.require_passenger_lib 'config/command'
@@ -148,8 +148,8 @@ module PhusionPassenger
       end
 
       def select_app_group_name_exact(name)
-        query_pool_xml.elements.each("info/supergroups/supergroup/group") do |group|
-          if group.elements["name"].text == name
+        query_pool_json.each do |group|
+          if group[:name] == name
             @groups << group
           end
         end
@@ -161,8 +161,8 @@ module PhusionPassenger
 
       def query_group_names
         result = []
-        query_pool_xml.elements.each("info/supergroups/supergroup/group") do |group|
-          result << group.elements["name"].text
+        query_pool_json.each do |group|
+          result << group[:name]
         end
         result << "Cancel"
         result
@@ -204,8 +204,8 @@ module PhusionPassenger
           app_root = Dir.pwd
         end
         regex = /^#{Regexp.escape(app_root)}/
-        query_pool_xml.elements.each("info/supergroups/supergroup/group") do |group|
-          if group.elements["app_root"].text =~ regex
+        query_pool_json.each do |group|
+          if group[:app_root] =~ regex
             @groups << group
           end
         end
@@ -218,7 +218,7 @@ module PhusionPassenger
       def perform_restart
         restart_method = @options[:rolling_restart] ? "rolling" : "blocking"
         @groups.each do |group|
-          group_name = group.elements["name"].text
+          group_name = group[:name]
           puts "Restarting #{group_name}"
           request = Net::HTTP::Post.new("/pool/restart_app_group.json")
           try_performing_full_admin_basic_auth(request, @instance)
@@ -249,15 +249,19 @@ module PhusionPassenger
         end
       end
 
-      def query_pool_xml
-        request = Net::HTTP::Get.new("/pool.xml")
+      def query_pool_json
+        request = Net::HTTP::Get.new("/pool.json")
         try_performing_ro_admin_basic_auth(request, @instance)
         response = @instance.http_request("agents.s/core_api", request)
         if response.code.to_i / 100 == 2
-          REXML::Document.new(response.body)
+          if RUBY_VERSION >= '2.3'
+            JSON.parse(response.body, symbolize_names: true).to_a.map{|(key,value)| {name: key.to_s, app_root: value.dig(:app_root,0,:value)}}
+          else
+            JSON.parse(response.body, symbolize_names: true).to_a.map{|(key,value)| {name: key.to_s, app_root: value[:app_root][0][:value]}}
+          end
         elsif response.code.to_i == 401
           if response["pool-empty"] == "true"
-            REXML::Document.new('<?xml version="1.0" encoding="iso8859-1"?><info version="3"></info>')
+            []
           elsif @options[:ignore_app_not_running]
             print_instance_querying_permission_error
             exit
